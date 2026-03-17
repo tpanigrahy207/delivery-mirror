@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>The Delivery Mirror</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,300;0,600;1,300&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0a0d13;font-family:'IBM Plex Sans',sans-serif;color:#e2e8f0;min-height:100vh}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:#0a0d13}
+::-webkit-scrollbar-thumb{background:#1e2d3d;border-radius:2px}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes scan{0%{transform:translateX(-100%)}100%{transform:translateX(400%)}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+textarea,input{font-family:'IBM Plex Mono',monospace}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useRef} = React;
+
+const TRANSCRIPT_SYS = `You are an expert delivery risk analyst. Analyze sales meeting transcripts to extract every commitment, promise, assumption, and stakeholder statement made by the vendor team.
+
+Return ONLY valid JSON, no markdown, no backticks:
+{
+  "projectName": "extracted project name",
+  "client": "client organization name",
+  "vendorPromises": [{"category": "Timeline|Team|Technical|Stakeholder|Scope", "speaker": "name", "promise": "exact commitment made", "verbatimQuote": "closest quote from transcript", "riskFlag": true/false, "riskReason": "why this is risky if riskFlag true"}],
+  "stakeholderSignals": [{"person": "name", "role": "role", "signal": "what they said about availability/commitment", "redFlag": true/false}],
+  "technicalAssumptions": ["assumption 1", "assumption 2"],
+  "impliedTimeline": "what timeline was discussed",
+  "impliedTeamSize": "what team was discussed",
+  "keyRisksFromTranscript": ["risk 1", "risk 2"]
+}`;
+
+const RECONCILE_SYS = `You are a senior delivery risk officer. You receive: (1) extracted promises from sales meeting transcripts, and (2) the actual signed SOW. Your job is to find every gap between what was promised verbally and what was actually committed in writing.
+
+Return ONLY valid JSON, no markdown, no backticks:
+{
+  "overallRiskScore": <integer 0-100, higher = more risk>,
+  "overallVerdict": "HIGH RISK|MEDIUM RISK|LOW RISK",
+  "executiveSummary": "2-3 sentence summary for an MD",
+  "gaps": [
+    {
+      "id": "GAP-01",
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "category": "Timeline|Team|Technical|Stakeholder|Scope|Governance",
+      "title": "short gap title",
+      "promised": "what was said in the sales calls",
+      "signed": "what the SOW actually says",
+      "delta": "the specific difference and why it matters",
+      "deliveryImpact": "what happens in delivery if this is not resolved",
+      "recommendedAction": "specific action to take before kickoff",
+      "weekItWillBlowUp": "estimate of which week this becomes a crisis if unaddressed"
+    }
+  ],
+  "stakeholderRisks": [{"person": "name", "risk": "description", "severity": "HIGH|MEDIUM|LOW"}],
+  "preKickoffActions": ["action 1", "action 2"],
+  "positiveAlignments": ["thing that is well aligned 1", "thing 2"]
+}`;
+
+const SEVERITY_CONFIG = {
+  CRITICAL: { color: '#ef4444', bg: 'rgba(239,68,68,0.08)', border: 'rgba(239,68,68,0.25)', label: 'CRITICAL' },
+  HIGH:     { color: '#f97316', bg: 'rgba(249,115,22,0.08)', border: 'rgba(249,115,22,0.25)', label: 'HIGH' },
+  MEDIUM:   { color: '#eab308', bg: 'rgba(234,179,8,0.08)',  border: 'rgba(234,179,8,0.25)',  label: 'MEDIUM' },
+  LOW:      { color: '#22c55e', bg: 'rgba(34,197,94,0.08)',  border: 'rgba(34,197,94,0.25)',  label: 'LOW' },
+};
+
+const VERDICT_CONFIG = {
+  'HIGH RISK':   { color: '#ef4444', bg: 'rgba(239,68,68,0.1)' },
+  'MEDIUM RISK': { color: '#eab308', bg: 'rgba(234,179,8,0.1)' },
+  'LOW RISK':    { color: '#22c55e', bg: 'rgba(34,197,94,0.1)' },
+};
+
+function SeverityBadge({level}) {
+  const c = SEVERITY_CONFIG[level] || SEVERITY_CONFIG.MEDIUM;
+  return <span style={{padding:'3px 10px',borderRadius:4,fontFamily:"'IBM Plex Mono',monospace",fontSize:10,fontWeight:500,letterSpacing:'0.08em',background:c.bg,border:`1px solid ${c.border}`,color:c.color,whiteSpace:'nowrap'}}>{c.label}</span>;
+}
+
+function ScoreRing({score}) {
+  const c = score >= 70 ? '#ef4444' : score >= 40 ? '#eab308' : '#22c55e';
+  const r = 40, stroke = 6, norm = 2*Math.PI*r, dash = norm * score/100;
+  return (
+    <div style={{position:'relative',width:96,height:96,flexShrink:0}}>
+      <svg width="96" height="96" style={{transform:'rotate(-90deg)'}}>
+        <circle cx="48" cy="48" r={r} fill="none" stroke="#1e2d3d" strokeWidth={stroke}/>
+        <circle cx="48" cy="48" r={r} fill="none" stroke={c} strokeWidth={stroke} strokeDasharray={`${dash} ${norm}`} strokeLinecap="round" style={{transition:'stroke-dasharray 1s ease'}}/>
+      </svg>
+      <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}>
+        <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:22,fontWeight:500,color:c,lineHeight:1}}>{score}</span>
+        <span style={{fontSize:9,color:'#475569',fontFamily:"'IBM Plex Mono',monospace",textTransform:'uppercase',letterSpacing:'0.1em'}}>risk</span>
+      </div>
+    </div>
+  );
+}
+
+function SectionHead({children}) {
+  return <div style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#475569',textTransform:'uppercase',letterSpacing:'0.12em',marginBottom:12}}>{children}</div>;
+}
+
+function GapCard({gap,idx}) {
+  const [open,setOpen] = useState(false);
+  const c = SEVERITY_CONFIG[gap.severity] || SEVERITY_CONFIG.MEDIUM;
+  return (
+    <div style={{border:`1px solid ${open ? c.border : '#1e2d3d'}`,borderRadius:10,overflow:'hidden',transition:'border-color 0.2s',marginBottom:8}}>
+      <div onClick={()=>setOpen(!open)} style={{display:'flex',alignItems:'center',gap:12,padding:'14px 18px',cursor:'pointer',background:open?'#0f1720':'transparent',transition:'background 0.2s'}}>
+        <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:'#334155',flexShrink:0}}>{gap.id}</span>
+        <SeverityBadge level={gap.severity}/>
+        <span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:'#64748b',flexShrink:0}}>{gap.category}</span>
+        <span style={{flex:1,fontSize:13,color:'#cbd5e1',fontWeight:500}}>{gap.title}</span>
+        {gap.weekItWillBlowUp && <span style={{fontSize:10,color:'#475569',fontFamily:"'IBM Plex Mono',monospace",flexShrink:0}}>💥 {gap.weekItWillBlowUp}</span>}
+        <span style={{color:'#334155',fontSize:12,flexShrink:0}}>{open?'▲':'▼'}</span>
+      </div>
+      {open && (
+        <div style={{padding:'0 18px 18px',display:'flex',flexDirection:'column',gap:14,borderTop:`1px solid #1e2d3d`,paddingTop:14}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div style={{background:'rgba(6,182,212,0.04)',border:'1px solid rgba(6,182,212,0.12)',borderRadius:8,padding:'12px 14px'}}>
+              <div style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#22d3ee',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:6}}>What was promised</div>
+              <p style={{fontSize:13,color:'#94a3b8',lineHeight:1.6}}>{gap.promised}</p>
+            </div>
+            <div style={{background:'rgba(239,68,68,0.04)',border:'1px solid rgba(239,68,68,0.12)',borderRadius:8,padding:'12px 14px'}}>
+              <div style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#f87171',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:6}}>What was signed</div>
+              <p style={{fontSize:13,color:'#94a3b8',lineHeight:1.6}}>{gap.signed}</p>
+            </div>
+          </div>
+          <div style={{background:'#0a0d13',border:'1px solid #1e2d3d',borderRadius:8,padding:'12px 14px'}}>
+            <div style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:c.color,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:6}}>The delta</div>
+            <p style={{fontSize:13,color:'#cbd5e1',lineHeight:1.6}}>{gap.delta}</p>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div>
+              <div style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#475569',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:6}}>Delivery impact</div>
+              <p style={{fontSize:12,color:'#64748b',lineHeight:1.6}}>{gap.deliveryImpact}</p>
+            </div>
+            <div style={{background:'rgba(234,179,8,0.05)',border:'1px solid rgba(234,179,8,0.15)',borderRadius:8,padding:'12px 14px'}}>
+              <div style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#fbbf24',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:6}}>Recommended action</div>
+              <p style={{fontSize:12,color:'#d4a84b',lineHeight:1.6}}>{gap.recommendedAction}</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [step,setStep] = useState(0);
+  const [transcript,setTranscript] = useState('');
+  const [sow,setSow] = useState('');
+  const [loading,setLoading] = useState(false);
+  const [loadMsg,setLoadMsg] = useState('');
+  const [phase,setPhase] = useState(0);
+  const [result,setResult] = useState(null);
+  const [transcriptAnalysis,setTranscriptAnalysis] = useState(null);
+  const [error,setError] = useState(null);
+  const [apiKey,setApiKey] = useState('');
+  const [showKey,setShowKey] = useState(false);
+
+  const getKey = () => {
+    try { return localStorage.getItem('dm_key') || apiKey; } catch(e){ return apiKey; }
+  };
+
+  const saveKey = (k) => {
+    setApiKey(k);
+    try { localStorage.setItem('dm_key',k); } catch(e){}
+  };
+
+  const callClaude = async (system, userMsg) => {
+    const key = getKey();
+    const headers = {'Content-Type':'application/json'};
+    if(key){ headers['x-api-key']=key; headers['anthropic-version']='2023-06-01'; headers['anthropic-dangerous-direct-browser-access']='true'; }
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST', headers,
+      body: JSON.stringify({ model:'claude-sonnet-4-20250514', max_tokens:2000, system, messages:[{role:'user',content:userMsg}] })
+    });
+    if(!res.ok){ const e=await res.json(); throw new Error(e.error?.message||'API error'); }
+    const data = await res.json();
+    const text = data.content.filter(b=>b.type==='text').map(b=>b.text).join('');
+    const clean = text.replace(/```json\n?|```\n?/g,'').trim();
+    const match = clean.match(/\{[\s\S]*\}/);
+    if(!match) throw new Error('Could not parse response');
+    return JSON.parse(match[0]);
+  };
+
+  const runAnalysis = async () => {
+    setLoading(true); setError(null); setPhase(1);
+    const phases = [
+      'Agent 1 — Reading transcript...',
+      'Agent 1 — Extracting promises and commitments...',
+      'Agent 2 — Auditing SOW...',
+      'Agent 2 — Reconciling against commitments...',
+      'Generating gap report...'
+    ];
+    let pi = 0; setLoadMsg(phases[0]);
+    const t = setInterval(()=>{ pi=(pi+1)%phases.length; setLoadMsg(phases[pi]); },3000);
+    try {
+      const ta = await callClaude(TRANSCRIPT_SYS, `Analyze this meeting transcript series:\n\n${transcript}`);
+      setTranscriptAnalysis(ta); setPhase(2);
+      const rec = await callClaude(RECONCILE_SYS,
+        `TRANSCRIPT ANALYSIS:\n${JSON.stringify(ta,null,2)}\n\nSOW DOCUMENT:\n${sow}\n\nFind all gaps between verbal commitments and the signed SOW.`
+      );
+      setResult(rec); setStep(2);
+    } catch(e) {
+      setError(e.message||'Analysis failed');
+    } finally {
+      clearInterval(t); setLoading(false); setPhase(0);
+    }
+  };
+
+  const reset = () => { setStep(0); setResult(null); setTranscriptAnalysis(null); setTranscript(''); setSow(''); setError(null); };
+
+  const vc = result ? (VERDICT_CONFIG[result.overallVerdict] || VERDICT_CONFIG['MEDIUM RISK']) : null;
+  const critCount = result?.gaps?.filter(g=>g.severity==='CRITICAL').length || 0;
+  const highCount = result?.gaps?.filter(g=>g.severity==='HIGH').length || 0;
+
+  return (
+    <div style={{minHeight:'100vh',background:'#0a0d13',padding:'0 0 60px'}}>
+      <div style={{position:'fixed',inset:0,backgroundImage:'radial-gradient(rgba(255,255,255,0.02) 1px, transparent 1px)',backgroundSize:'32px 32px',pointerEvents:'none',zIndex:0}}/>
+
+      <div style={{position:'relative',zIndex:1,maxWidth:820,margin:'0 auto',padding:'32px 20px'}}>
+
+        {/* Header */}
+        <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',marginBottom:40,flexWrap:'wrap',gap:12}}>
+          <div>
+            <div style={{fontFamily:"'Fraunces',serif",fontWeight:600,fontSize:30,color:'#f1f5f9',letterSpacing:'-0.5px',lineHeight:1}}>
+              The Delivery <span style={{fontStyle:'italic',color:'#60a5fa'}}>Mirror</span>
+            </div>
+            <div style={{fontSize:10,fontFamily:"'IBM Plex Mono',monospace",color:'#334155',marginTop:6,letterSpacing:'0.08em'}}>
+              PROMISE · ALIGNMENT · VELOCITY · EXECUTION
+            </div>
+          </div>
+          <button onClick={()=>setShowKey(!showKey)}
+            style={{background:showKey?'rgba(96,165,250,0.08)':'#0f1720',border:`1px solid ${showKey?'rgba(96,165,250,0.3)':'#1e2d3d'}`,color:showKey?'#60a5fa':'#334155',padding:'7px 14px',borderRadius:8,cursor:'pointer',fontFamily:"'IBM Plex Mono',monospace",fontSize:10,letterSpacing:'0.06em'}}>
+            {getKey() ? '✓ KEY SET' : 'API KEY'}
+          </button>
+        </div>
+
+        {/* API Key Panel */}
+        {showKey && (
+          <div style={{background:'#0f1720',border:'1px solid #1e2d3d',borderRadius:10,padding:'14px 18px',marginBottom:20,animation:'fadeUp 0.2s ease'}}>
+            <div style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#334155',textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}}>Anthropic API Key</div>
+            <div style={{display:'flex',gap:8}}>
+              <input type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)}
+                placeholder="sk-ant-api03-..."
+                style={{flex:1,background:'#0a0d13',border:'1px solid #1e2d3d',color:'#e2e8f0',padding:'8px 12px',borderRadius:8,fontSize:12,outline:'none'}}/>
+              <button onClick={()=>saveKey(apiKey)}
+                style={{background:'rgba(96,165,250,0.1)',border:'1px solid rgba(96,165,250,0.3)',color:'#60a5fa',padding:'8px 14px',borderRadius:8,cursor:'pointer',fontSize:10,fontFamily:"'IBM Plex Mono',monospace"}}>
+                SAVE
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 0 — Input */}
+        {step === 0 && (
+          <div style={{animation:'fadeUp 0.3s ease'}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <SectionHead>01 — Meeting Transcript (.md)</SectionHead>
+                  {transcript && <span style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#22c55e'}}>✓ {transcript.length} chars</span>}
+                </div>
+                <textarea value={transcript} onChange={e=>setTranscript(e.target.value)}
+                  placeholder={`# Project Discovery Call\n## Date: March 3, 2026\n\n**Sales Lead:** We can have the backlog ready by week 1...\n**Client PO:** I'll be dedicated to this project...\n\nPaste your Loom or Teams transcript here.`}
+                  style={{flex:1,minHeight:320,background:'#0f1720',border:'1px solid #1e2d3d',color:'#94a3b8',padding:'14px',borderRadius:10,fontSize:12,lineHeight:1.7,resize:'vertical',outline:'none'}}/>
+              </div>
+
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <SectionHead>02 — Statement of Work</SectionHead>
+                  {sow && <span style={{fontSize:9,fontFamily:"'IBM Plex Mono',monospace",color:'#22c55e'}}>✓ {sow.length} chars</span>}
+                </div>
+                <textarea value={sow} onChange={e=>setSow(e.target.value)}
+                  placeholder={`# Statement of Work\n## Client Name — Project Title\n\n## Scope\n- In scope: ...\n\n## Team\n| Role | Allocation |\n\n## Assumptions\n- Client PO available minimum 3hrs/week...\n\nPaste your SOW text here.`}
+                  style={{flex:1,minHeight:320,background:'#0f1720',border:'1px solid #1e2d3d',color:'#94a3b8',padding:'14px',borderRadius:10,fontSize:12,lineHeight:1.7,resize:'vertical',outline:'none'}}/>
+              </div>
+            </div>
+
+            {error && (
+              <div style={{background:'rgba(239,68,68,0.07)',border:'1px solid rgba(239,68,68,0.2)',borderRadius:10,padding:'12px 16px',color:'#fca5a5',fontSize:11,fontFamily:"'IBM Plex Mono',monospace",marginBottom:12}}>
+                ⚠ {error}
+              </div>
+            )}
+
+            <button onClick={runAnalysis} disabled={loading||!transcript.trim()||!sow.trim()}
+              style={{width:'100%',padding:'14px',background:loading?'rgba(96,165,250,0.05)':'rgba(96,165,250,0.08)',border:'1px solid rgba(96,165,250,0.25)',color:'#60a5fa',borderRadius:10,cursor:loading||!transcript.trim()||!sow.trim()?'not-allowed':'pointer',fontFamily:"'IBM Plex Mono',monospace",fontSize:12,fontWeight:500,letterSpacing:'0.08em',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:!transcript.trim()||!sow.trim()?0.4:1,transition:'all 0.2s'}}>
+              {loading ? (
+                <><span style={{display:'inline-block',animation:'spin 1s linear infinite'}}>◌</span><span style={{animation:'pulse 2s ease infinite'}}>{loadMsg}</span></>
+              ) : '⟳  RUN DELIVERY MIRROR ANALYSIS'}
+            </button>
+
+            {loading && (
+              <div style={{display:'flex',gap:8,marginTop:16,alignItems:'center'}}>
+                {['AGENT 1: TRANSCRIPT','AGENT 2: RECONCILE','REPORT'].map((label,i)=>(
+                  <div key={i} style={{flex:1,display:'flex',flexDirection:'column',gap:4}}>
+                    <div style={{fontSize:8,fontFamily:"'IBM Plex Mono',monospace",color: phase>i?'#22c55e':phase===i?'#60a5fa':'#1e2d3d',letterSpacing:'0.08em'}}>{label}</div>
+                    <div style={{height:2,background:'#1e2d3d',borderRadius:1,overflow:'hidden',position:'relative'}}>
+                      {phase===i+1 && <div style={{position:'absolute',inset:0,background:'linear-gradient(90deg,transparent,#60a5fa,transparent)',animation:'scan 1.4s linear infinite'}}/>}
+                      {phase>i+1 && <div style={{height:'100%',width:'100%',background:'#22c55e'}}/>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Step 2 — Results */}
+        {step === 2 && result && (
+          <div style={{animation:'fadeUp 0.3s ease'}}>
+
+            {/* Header row */}
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:24,gap:16,flexWrap:'wrap'}}>
+              <div>
+                <div style={{fontFamily:"'Fraunces',serif",fontSize:20,color:'#f1f5f9',fontWeight:600}}>{transcriptAnalysis?.projectName || 'Project Analysis'}</div>
+                <div style={{fontSize:11,color:'#475569',fontFamily:"'IBM Plex Mono',monospace",marginTop:2}}>{transcriptAnalysis?.client}</div>
+              </div>
+              <button onClick={reset} style={{background:'transparent',border:'1px solid #1e2d3d',color:'#475569',padding:'7px 16px',borderRadius:8,cursor:'pointer',fontFamily:"'IBM Plex Mono',monospace",fontSize:10}}>
+                ← NEW ANALYSIS
+              </button>
+            </div>
+
+            {/* Executive summary card */}
+            <div style={{background:'#0f1720',border:`1px solid ${vc?.color || '#1e2d3d'}22`,borderRadius:12,padding:'20px 24px',marginBottom:16,display:'flex',gap:20,alignItems:'flex-start',flexWrap:'wrap'}}>
+              <ScoreRing score={result.overallRiskScore||0}/>
+              <div style={{flex:1,minWidth:200}}>
+                <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10,flexWrap:'wrap'}}>
+                  <span style={{padding:'4px 14px',borderRadius:4,fontFamily:"'IBM Plex Mono',monospace",fontSize:10,fontWeight:500,letterSpacing:'0.08em',background:vc?.bg,color:vc?.color,border:`1px solid ${vc?.color}40`}}>
+                    {result.overallVerdict}
+                  </span>
+                  <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:'#ef4444'}}>{critCount} CRITICAL</span>
+                  <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:'#f97316'}}>{highCount} HIGH</span>
+                  <span style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,color:'#475569'}}>{result.gaps?.length || 0} TOTAL GAPS</span>
+                </div>
+                <p style={{fontSize:13,color:'#94a3b8',lineHeight:1.7}}>{result.executiveSummary}</p>
+              </div>
+            </div>
+
+            {/* Gaps */}
+            {result.gaps?.length > 0 && (
+              <div style={{marginBottom:16}}>
+                <SectionHead>Gap Analysis — {result.gaps.length} gaps identified</SectionHead>
+                {result.gaps.map((gap,i)=><GapCard key={i} gap={gap} idx={i}/>)}
+              </div>
+            )}
+
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+
+              {/* Pre-kickoff actions */}
+              {result.preKickoffActions?.length > 0 && (
+                <div style={{background:'#0f1720',border:'1px solid rgba(234,179,8,0.2)',borderRadius:10,padding:'16px 18px'}}>
+                  <SectionHead>Pre-kickoff actions required</SectionHead>
+                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                    {result.preKickoffActions.map((a,i)=>(
+                      <div key={i} style={{display:'flex',gap:8,fontSize:12,color:'#94a3b8',lineHeight:1.5}}>
+                        <span style={{color:'#eab308',flexShrink:0,fontFamily:"'IBM Plex Mono',monospace",fontSize:10,marginTop:1}}>{String(i+1).padStart(2,'0')}</span>
+                        {a}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Stakeholder risks */}
+              {result.stakeholderRisks?.length > 0 && (
+                <div style={{background:'#0f1720',border:'1px solid #1e2d3d',borderRadius:10,padding:'16px 18px'}}>
+                  <SectionHead>Stakeholder risk signals</SectionHead>
+                  <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                    {result.stakeholderRisks.map((s,i)=>{
+                      const sc = SEVERITY_CONFIG[s.severity] || SEVERITY_CONFIG.MEDIUM;
+                      return (
+                        <div key={i} style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                          <SeverityBadge level={s.severity}/>
+                          <div>
+                            <div style={{fontSize:11,fontWeight:500,color:'#cbd5e1',fontFamily:"'IBM Plex Mono',monospace"}}>{s.person}</div>
+                            <div style={{fontSize:11,color:'#64748b',lineHeight:1.5,marginTop:2}}>{s.risk}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Positive alignments */}
+            {result.positiveAlignments?.length > 0 && (
+              <div style={{background:'rgba(34,197,94,0.04)',border:'1px solid rgba(34,197,94,0.15)',borderRadius:10,padding:'16px 18px'}}>
+                <SectionHead>What is well aligned</SectionHead>
+                <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                  {result.positiveAlignments.map((p,i)=>(
+                    <div key={i} style={{display:'flex',gap:8,fontSize:12,color:'#86efac',lineHeight:1.5}}>
+                      <span style={{color:'#22c55e',flexShrink:0}}>✓</span>{p}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{textAlign:'center',marginTop:28,fontSize:9,color:'#1e2d3d',fontFamily:"'IBM Plex Mono',monospace",letterSpacing:'0.08em'}}>
+              THE DELIVERY MIRROR · PHASE 1: GAP FINDER · BUILT BY TANU PANIGRAHY
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
